@@ -54,3 +54,35 @@ run:
         -r "$REVISION" \
         --input samplesheet.csv --outdir results
 
+# Fast sanity test on the ONLINE box
+test-online:
+    nextflow run main \
+        -profile podman \
+        -stub-run \
+        -c conf/base.config \
+        -c conf/containers.local.config \
+        -c conf/fast.config \
+        -c conf/data.local.config \
+        --outdir /tmp/nf-test -resume
+
+# Full dress rehearsal ONLINE (no stub)
+run-online:
+    nextflow run main \
+        -profile podman \
+        -resume \
+        -c conf/base.config \
+        -c conf/containers.local.config \
+        -c conf/data.local.config
+
+# Push proven bundle to S3
+ship:
+    just pull inspect gen-proxy-conf push
+
+# Mirror Wave images (ONLINE)
+wave-copy:
+    ./wave-to-quay.sh conf/containers.local.config
+
+# Offline pull test (OFFLINE)
+pull-test:
+    ./pull-offline-test.sh
+
