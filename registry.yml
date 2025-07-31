@@ -1,0 +1,3 @@
+podman:
+  enabled: true
+  registry: "nexus-docker-quay.ship.gov.sg"
