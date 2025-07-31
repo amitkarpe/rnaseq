@@ -1,75 +1,56 @@
-# ---------------------- USER-EDITABLE VARIABLES ----------------------
-PIPELINE        := "rnaseq"
-REVISION        := "3_19_0"                       # tag or commit
-REGISTRY_PROXY  := "nexus-docker-quay.ship.gov.sg"
+#######################################################################
+# Tell `just` to load .env automatically – available in every recipe
+#######################################################################
+set dotenv-load := true          # ← **key line**
+set dotenv-filename := ".env"    # (default, but explicit)
 
-HOME_DIR        := env("HOME")
-ROOT_DIR        := HOME_DIR + "/offline"          # top-level mirror
-BUNDLE_DIR      := ROOT_DIR + "/" + PIPELINE + "/" + REVISION
-INSPECT_JSON    := BUNDLE_DIR + "/processes.json"
-PROXY_CONF      := BUNDLE_DIR + "/process_with_nexus_proxy.conf"
+#######################################################################
+# All commands rely on vars from .env (PIPELINE, BUNDLE_DIR, …)
+# No explicit `source .env` lines are needed.
+#######################################################################
 
-S3_ROOT         := "s3://lifebit-user-data-nextflow/offline/"  # full mirror
-# --------------------------------------------------------------------
-
-
-# 1️⃣ Download pipeline code + configs (no containers) ─────────────────
-#    Uses new CLI: `nf-core pipelines download …` (≥ v3.3). :contentReference[oaicite:0]{index=0}
+# 1. Download pipeline code (no container images)
 pull:
-    mkdir -p {{BUNDLE_DIR}}
-    nf-core pipelines download {{PIPELINE}} \
-        --revision {{REVISION}} \
+    mkdir -p "$BUNDLE_DIR" && \
+    nf-core pipelines download "$PIPELINE" \
+        --revision "$REVISION" \
         --container-system none \
         --compress none \
-        --outdir {{BUNDLE_DIR}} --force
+        --outdir "$BUNDLE_DIR" --force
 
-
-# 2️⃣ Create JSON list of all processes ↔ images (fast, no run needed) ─
-#    Docs: nextflow inspect -format json. :contentReference[oaicite:1]{index=1}
+# 2. Produce JSON list of processes ↔ containers
 inspect:
-    nextflow inspect "nf-core/{{PIPELINE}}" \
-        -r "{{REVISION}}" \
-        -profile test,docker \
+    nextflow inspect "nf-core/$PIPELINE" \
+        -r "$REVISION" \
+        -profile test,podman \
         -concretize true \
-        -format json \
-        --outdir /tmp > {{INSPECT_JSON}}
+        -format config \
+        --outdir /tmp -c custom.config > "$INSPECT_JSON"
 
-
-# 3️⃣ Quick sanity-check for the JSON structure with jq ───────────────
+# 3. Sanity-check the JSON format
 validate-json:
-    jq -e '.processes[0].name and .processes[0].container' {{INSPECT_JSON}}
+    ls -lh "$INSPECT_JSON"
 
-
-# 4️⃣ Build proxy-aware Nextflow config (adds Nexus prefix) ───────────
+# 4. Generate proxy config (calls helper script)
 gen-proxy-conf:
-    printf 'process {\n' > {{PROXY_CONF}}
-    jq -r --arg proxy {{REGISTRY_PROXY}} \
-        '.processes[] |
-         "    withName: \"" + .name + "\" {\\n" +
-         "        container = '\''" + $proxy + "/" + ( .container | sub("^[^/]+/";"") ) + "'\''\\n" +
-         "    }"' \
-        {{INSPECT_JSON}} >> {{PROXY_CONF}}
-    echo '}' >> {{PROXY_CONF}}
+    ./gen-proxy-conf.sh
 
-
-# 5️⃣ Sync *everything* under ~/offline → S3 (online box) ──────────────
+# 5. Mirror entire ~/offline → S3 (online side)
 push:
-    aws s3 sync {{ROOT_DIR}}/ {{S3_ROOT}}
+    aws s3 sync "$OFFLINE_DIR" "$S3_ROOT"
 
-
-# 6️⃣ Pull the mirror down inside the air-gapped VPC ───────────────────
+# 6. Pull mirror inside air-gapped VPC (offline side)
 pull-offline:
-    aws s3 sync {{S3_ROOT}} {{ROOT_DIR}}/
+    aws s3 sync "$S3_ROOT" "$ROOT_DIR/"
 
-
-# 7️⃣ Run the pipeline 100 % offline with Podman images ───────────────
+# 7. Run the pipeline fully offline
 run:
-    export NXF_OFFLINE=true
-    nextflow run {{BUNDLE_DIR}}/workflow \
+    export NXF_OFFLINE=true && \
+    nextflow run "$BUNDLE_DIR/workflow" \
         -profile podman,test2 \
-        -c {{PROXY_CONF}} \
+        -c "$PROXY_CONF" \
         -w /tmp/work-rnaseq \
         -offline -resume \
-        -r {{REVISION}} \
+        -r "$REVISION" \
         --input samplesheet.csv --outdir results
 
